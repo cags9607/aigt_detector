@@ -1,0 +1,102 @@
+# aigt/detect_batch.py
+
+from typing import Any, Dict, List, Optional, Sequence, Union
+import numpy as np
+import pandas as pd
+
+from .detector import Detector
+from .config import WindowConfig, BatchConfig
+
+
+def detect_batch(
+    texts: Sequence[str],
+    *,
+    prediction_ids: Optional[Sequence[str]] = None,
+    lang: Union[str, Sequence[str]] = "en",
+    device: str = "auto",          # accepted for compatibility
+    mode: str = "accuracy",        # accepted for compatibility
+    max_len: int = 500,
+    batch_size: int = 16,
+    progress: bool = True,
+    return_text: bool = False,
+) -> List[Dict[str, Any]]:
+    """
+    Binoculars-style batch detector.
+    Returns ONE article-level dict per input text.
+    """
+
+    n = len(texts)
+
+    if prediction_ids is None:
+        prediction_ids = [str(i) for i in range(n)]
+    elif len(prediction_ids) != n:
+        raise ValueError("prediction_ids must match texts length")
+
+    if isinstance(lang, str):
+        langs = [lang] * n
+    else:
+        if len(lang) != n:
+            raise ValueError("lang must be str or list of same length")
+        langs = list(lang)
+
+    detector = Detector.from_hf()
+
+    window_cfg = WindowConfig(token_length = max_len)
+    batch_cfg = BatchConfig(
+        batch_size = batch_size,
+        show_progress = progress,
+    )
+
+    articles_df, windows_df = detector.predict(
+        texts = list(texts),
+        doc_ids = list(prediction_ids),
+        lang = langs,
+        window = window_cfg,
+        batch = batch_cfg,
+    )
+
+    # Compute total tokens per article
+    token_counts = (
+        windows_df
+        .groupby("prediction_id")["token_count"]
+        .sum()
+        .to_dict()
+    )
+
+    results: List[Dict[str, Any]] = []
+
+    for _, r in articles_df.iterrows():
+        pid = str(r["prediction_id"])
+        n_windows = int(r["num_windows"])
+
+        if n_windows == 0 or pd.isna(r["ai_text_probability"]):
+            out = {
+                "prediction_id": pid,
+                "lang": r["lang"],
+                "fraction_ai": None,
+                "prediction_short": None,
+                "prediction_long": None,
+                "n_windows": 0,
+                "n_ai_segments": 0,
+                "n_human_segments": 0,
+                "n_tokens": 0,
+            }
+        else:
+            out = {
+                "prediction_id": pid,
+                "lang": r["lang"],
+                "fraction_ai": float(r["ai_text_probability"]),
+                "prediction_short": r["prediction_short"],
+                "prediction_long": r["prediction"],
+                "n_windows": int(r["num_windows"]),
+                "n_ai_segments": int(r["num_ai_segments"]),
+                "n_human_segments": int(r["num_human_segments"]),
+                "n_tokens": int(token_counts.get(pid, 0)),
+            }
+
+        if return_text:
+            out["text"] = r.get("text", "")
+
+        results.append(out)
+
+    return results
