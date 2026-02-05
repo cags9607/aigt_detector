@@ -1,6 +1,13 @@
-"""
-train_windows.py
+#!/usr/bin/env python3
 
+"""
+train_w_windows.py
+
+EditLens-style QLoRA distillation on *window-level* CSVs.
+
+Designed to live inside this repo (AIGT) as a training utility script.
+- No Google Drive mounting
+- No language filtering (assume you pass a language-specific dataset per run)
 - Saves artifacts in: <output_dir>/best/
     - lora_adapter/   (PEFT adapter)
     - head.pt         (classification head)
@@ -13,17 +20,18 @@ train_windows.py
 
 Usage example:
 
-python scripts/train_windows.py \
+python scripts/train_w_windows.py \
   --data-csv data/windows_fr.csv \
   --text-col window_text \
   --target-col ai_assistance_score \
   --group-col target_url \
   --model-name Qwen/Qwen2.5-3B-Instruct \
-  --output-dir runs/fr \
+  --output-dir runs/qlora_fr \
   --val-ratio 0.1
 
 Notes:
 - Requires CUDA (QLoRA + bitsandbytes 4-bit).
+- This is training code; keep it out of lightweight inference installs if you want.
 """
 from __future__ import annotations
 
@@ -96,6 +104,9 @@ class TrainConfig:
     # Eval
     eval_batch_size: int = 8
     threshold_for_classification: float = 0.5
+
+    # AMP
+    prefer_bf16: bool = True
 
     # Output
     output_dir: str = "runs/train_w_windows"
@@ -321,7 +332,7 @@ def main():
     ap.add_argument("--eval-batch-size", type=int, default=8)
     ap.add_argument("--threshold", type=float, default=0.5)
 
-    ap.add_argument("--output-dir", default="fit/")
+    ap.add_argument("--output-dir", default="runs/train_w_windows")
     ap.add_argument("--prefer-bf16", action="store_true", help="Prefer BF16 autocast if supported (default).")
     ap.add_argument("--no-prefer-bf16", dest="prefer_bf16", action="store_false", help="Force FP16 autocast.")
     ap.set_defaults(prefer_bf16=True)
