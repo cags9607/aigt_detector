@@ -1,3 +1,8 @@
+# Aggregation rule:
+# fraction_ai = (sum token_count of AI windows) / (sum token_count of all windows)
+# + Tail exception:
+#   If n_windows > 1 and last window token_count < 75, ignore that last window for aggregation (inherently noisy)
+
 from __future__ import annotations
 
 from typing import Tuple
@@ -27,19 +32,52 @@ def aggregate_token_weighted(
     df_windows: pd.DataFrame,
     *,
     threshold: float,
+    tail_min_tokens: int = 75,
 ) -> pd.DataFrame:
     """
     Aggregates per prediction_id:
-      - ai_text_probability = token-weighted fraction of windows with score >= threshold
+
+      - ai_text_probability = token-weighted fraction of tokens in windows with score >= threshold
+        (same value as fraction_ai; name kept for compatibility)
       - fraction_ai, fraction_human
-      - num_ai_segments, num_human_segments
+      - num_ai_segments, num_human_segments   (counts of windows among the windows considered for aggregation)
       - prediction, prediction_short
+
+    Tail exception (aggregation only):
+      - If n_windows > 1 and the last window token_count < tail_min_tokens, ignore that last window.
+      - "Last" is defined by highest window_index.
     """
     thr = float(threshold)
+    tail_min_tokens = int(tail_min_tokens)
+
+    required = {"prediction_id", "ai_assistance_score", "token_count"}
+    missing = required - set(df_windows.columns)
+    if missing:
+        raise ValueError(f"df_windows missing required columns: {sorted(missing)}")
+
+    has_window_index = "window_index" in df_windows.columns
 
     def _agg(g: pd.DataFrame) -> pd.Series:
-        scores = g["ai_assistance_score"].to_numpy()
-        tw = g["token_count"].to_numpy().astype(float)
+        # Ensure stable ordering so "last window" is well-defined
+        if has_window_index:
+            g0 = g.sort_values("window_index").reset_index(drop=True)
+        else:
+            # Fallback: preserve incoming order (less ideal, but avoids hard failure)
+            g0 = g.reset_index(drop=True)
+
+        # Tail-drop rule (aggregation only)
+        if len(g0) > 1:
+            last_tc = g0.iloc[-1]["token_count"]
+            try:
+                last_tc = float(last_tc)
+            except Exception:
+                last_tc = np.nan
+
+            if np.isfinite(last_tc) and last_tc < tail_min_tokens:
+                g0 = g0.iloc[:-1].reset_index(drop=True)
+
+        scores = g0["ai_assistance_score"].to_numpy()
+        tw = g0["token_count"].to_numpy().astype(float)
 
         valid = np.isfinite(scores)
         if valid.sum() == 0:
