@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aigt"
+version = "0.1.0"
+description = "Functions to assist on the detection of ai-generated text."
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [{name = "DeepSee"}]
+dependencies = [
+  "numpy>=1.24",
+  "pandas>=2.0",
+  "tqdm>=4.66",
+  "torch>=2.1",
+  "transformers>=4.41",
+  "peft>=0.11",
+  "accelerate>=0.30",
+  "bitsandbytes>=0.43",
+  "huggingface_hub>=0.23",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.4",
+  "ruff>=0.5",
+]
+
+[tool.setuptools]
+packages = ["aigt"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"

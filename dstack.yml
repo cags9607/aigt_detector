@@ -1,0 +1,52 @@
+type: task
+name: ai-gen-text-classifier
+
+python: "3.12"
+
+files:
+  - pyproject.toml:/workflow/pyproject.toml
+  - README.md:/workflow/README.md
+  - aigt:/workflow/aigt
+  - processor.py:/workflow/processor.py
+  - processor_config.py:/workflow/processor_config.py
+  - processor_utils.py:/workflow/processor_utils.py
+  - core.py:/workflow/core.py
+
+spot_policy: auto
+
+max_price: 0.25
+
+env:
+  - QUEUE_URL=https://deepsee-queue.herokuapp.com/exchange-batch
+  - QUEUE_API_KEY=REPLACE_ME
+  - BATCH_SIZE=5
+  - EMPTY_QUEUE_SLEEP_SECONDS=60
+
+  - AIGT_REPO_ID=DeepSee-io/qwen_adapters_aigt
+  - AIGT_SUBDIR_BY_LANG_JSON={"en":"en/best","es":"es/best","de":"de/best","fr":"fr/best","it":"it/best","ja":"ja/best"}
+  - AIGT_REVISION=
+  - AIGT_HF_TOKEN=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
+
+  - AIGT_DEVICE=cuda
+  - AIGT_CACHE_POLICY=unload_after_call
+  - AIGT_MAX_LEN=500
+  - AIGT_BATCH_SIZE=16
+  - AIGT_WINDOW_AI_THRESHOLD=0.5
+  - AIGT_PREFER_BF16=1
+
+commands:
+  - cd /workflow
+  - pwd
+  - ls
+  - pip install --no-cache-dir .
+  - pip install --no-cache-dir aiohttp requests
+  - python3 processor.py
+
+resources:
+  gpu: 16GB..24GB
+
+idle_duration: 6h
+
+retry:
+  on_events: [no-capacity, error, interruption]
+  duration: 2d
