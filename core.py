@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class TextInferConfig:
     # HuggingFace / LoRA assets
     repo_id: str = "DeepSee-io/qwen_adapters_aigt"
-    subdir_by_lang_json: str = '{"en":"EN/best","es":"ES/best","de":"DE/best","fr":"FR/best","it":"IT/best","ja":"JA/best"}'
+    subdir_by_lang_json: str = '{"en":"en/best","es":"es/best","de":"de/best","fr":"fr/best","it":"it/best","ja":"ja/best"}'
     revision: Optional[str] = None
     hf_token: Optional[str] = None
 
@@ -168,4 +168,5 @@ class TextClassifier:
             "batch_size": self.cfg.batch_size,
             "window_ai_threshold": self.cfg.window_ai_threshold,
             "prefer_bf16": self.cfg.prefer_bf16,
+
         }
