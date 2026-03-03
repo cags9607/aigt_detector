@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -33,6 +32,12 @@ class Detector:
     Notes:
     - Importing this class does not require CUDA.
     - CUDA is required at runtime for default config (device="cuda").
+
+    Alignment contract:
+    - Returned df_articles is restored to original input order.
+    - Returned df_windows is restored to original input order, then window_index.
+    - No final sort by (lang, prediction_id), because that can misalign callers
+      that expect request-order outputs.
     """
 
     def __init__(
@@ -48,7 +53,7 @@ class Detector:
         self._lang_model_cache: Dict[str, LoadedStudent] = {}
 
         self._device = torch.device(runtime.device)
-        self._amp_dtype = pick_amp_dtype(prefer_bf16=runtime.prefer_bf16)
+        self._amp_dtype = pick_amp_dtype(prefer_bf16 = runtime.prefer_bf16)
 
     @classmethod
     def from_hf(
@@ -66,21 +71,18 @@ class Detector:
         window_ai_threshold: float = 0.5,
         prefer_bf16: bool = True,
     ) -> "Detector":
-        hf = HFConfig(repo_id=repo_id, subdir_by_lang=subdir_by_lang, revision=revision, token=token)
+        hf = HFConfig(repo_id = repo_id, subdir_by_lang = subdir_by_lang, revision = revision, token = token)
         if runtime is None:
             runtime = RuntimeConfig(
-                device=device,
-                cache_policy=cache_policy,  # type: ignore
-                model_name_fallback=model_name_fallback,
-                max_length_fallback=max_length_fallback,
-                window_ai_threshold=window_ai_threshold,
-                prefer_bf16=prefer_bf16,
+                device = device,
+                cache_policy = cache_policy,  # type: ignore
+                model_name_fallback = model_name_fallback,
+                max_length_fallback = max_length_fallback,
+                window_ai_threshold = window_ai_threshold,
+                prefer_bf16 = prefer_bf16,
             )
-        return cls(hf=hf, runtime=runtime)
+        return cls(hf = hf, runtime = runtime)
 
-    # -------------------------
-    # Internal: load language model
-    # -------------------------
     def _normalize_lang(self, lang: Optional[str]) -> str:
         lg = (lang or "").strip().lower()
         if not lg:
@@ -99,16 +101,16 @@ class Detector:
             raise ValueError("subdir_by_lang must contain at least 'en' mapping.")
 
         st = load_student_from_hf(
-            lang=lg,
-            repo_id=self.hf.repo_id,
-            subdir=subdir,
-            revision=self.hf.revision,
-            token=self.hf.token,
-            model_name_fallback=self.runtime.model_name_fallback,
-            max_length_fallback=self.runtime.max_length_fallback,
-            device=self._device,
-            amp_dtype=self._amp_dtype,
-            tokenizer_cache=self._tokenizer_cache,
+            lang = lg,
+            repo_id = self.hf.repo_id,
+            subdir = subdir,
+            revision = self.hf.revision,
+            token = self.hf.token,
+            model_name_fallback = self.runtime.model_name_fallback,
+            max_length_fallback = self.runtime.max_length_fallback,
+            device = self._device,
+            amp_dtype = self._amp_dtype,
+            tokenizer_cache = self._tokenizer_cache,
         )
         self._lang_model_cache[lg] = st
         print(f"[Loaded HF] lang={lg} | model_name={st.model_name} | max_length={st.max_length} | subdir={subdir}")
@@ -120,9 +122,6 @@ class Detector:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    # -------------------------
-    # Public predict
-    # -------------------------
     @torch.no_grad()
     def predict(
         self,
@@ -137,8 +136,14 @@ class Detector:
 
         if doc_ids is None:
             doc_ids = [str(i) for i in range(len(texts))]
+        else:
+            doc_ids = [str(x) for x in doc_ids]
+
         if len(doc_ids) != len(texts):
             raise ValueError("doc_ids must be None or have same length as texts.")
+
+        if len(set(doc_ids)) != len(doc_ids):
+            raise ValueError("doc_ids must be unique within a predict() call.")
 
         if isinstance(lang, str):
             lang_per_doc = [lang] * len(texts)
@@ -154,7 +159,6 @@ class Detector:
             window_ai_threshold = float(self.runtime.window_ai_threshold)
         thr = float(window_ai_threshold)
 
-        # keep original lang label in outputs; model fallback is handled via normalize->en
         lang_to_idx: Dict[str, List[int]] = {}
         for i, lg in enumerate(lang_per_doc):
             key = (lg or "").strip().lower()
@@ -162,7 +166,7 @@ class Detector:
                 key = "en"
             lang_to_idx.setdefault(key, []).append(i)
 
-        lang_order = sorted(lang_to_idx.keys(), key=lambda k: len(lang_to_idx[k]), reverse=True)
+        lang_order = sorted(lang_to_idx.keys(), key = lambda k: len(lang_to_idx[k]), reverse = True)
 
         all_articles_rows: List[pd.DataFrame] = []
         all_windows_rows: List[pd.DataFrame] = []
@@ -170,7 +174,7 @@ class Detector:
 
         for lg in lang_order:
             idxs = lang_to_idx[lg]
-            st = self.load_language(lg)  # unknown -> EN inside normalize
+            st = self.load_language(lg)
 
             model = st.model
             tokenizer = st.tokenizer
@@ -183,7 +187,7 @@ class Detector:
 
             it = idxs
             if batch.show_progress:
-                it = tqdm(it, desc=f"[{lg}] Chunking", total=len(idxs))
+                it = tqdm(it, desc = f"[{lg}] Chunking", total = len(idxs))
 
             for i in it:
                 prediction_id = str(doc_ids[i])
@@ -193,25 +197,26 @@ class Detector:
                 if window.reuse_full_encoding:
                     full_ids = tokenizer(
                         text,
-                        add_special_tokens=False,
-                        truncation=False,
-                        padding=False,
-                        return_attention_mask=False,
+                        add_special_tokens = False,
+                        truncation = False,
+                        padding = False,
+                        return_attention_mask = False,
                     )["input_ids"]
 
                 wins = chunk_text_adaptive_windows(
                     tokenizer,
                     text,
-                    token_length=int(window.token_length),
-                    stride=window.stride,
-                    keep_segment_text=bool(window.keep_segment_text),
-                    lookback_tokens=int(window.boundary_lookback_tokens),
-                    min_tokens=int(window.boundary_min_tokens),
-                    tail_chars=int(window.boundary_tail_chars),
+                    token_length = int(window.token_length),
+                    stride = window.stride,
+                    keep_segment_text = bool(window.keep_segment_text),
+                    lookback_tokens = int(window.boundary_lookback_tokens),
+                    min_tokens = int(window.boundary_min_tokens),
+                    tail_chars = int(window.boundary_tail_chars),
                 )
 
                 articles_rows.append(
                     {
+                        "input_order": int(i),
                         "lang": (lg or "").strip().lower() if lg is not None else "en",
                         "prediction_id": prediction_id,
                         "token_length_cap": int(window.token_length),
@@ -233,11 +238,11 @@ class Detector:
                         w_text = w["window_text"] if window.keep_segment_text else text[w["start_index"] : w["end_index"]]
                         enc = tokenizer(
                             w_text,
-                            add_special_tokens=True,
-                            truncation=True,
-                            max_length=max_length,
-                            padding=False,
-                            return_attention_mask=True,
+                            add_special_tokens = True,
+                            truncation = True,
+                            max_length = max_length,
+                            padding = False,
+                            return_attention_mask = True,
                         )
                         enc_input_ids = enc["input_ids"]
                         enc_attn = enc["attention_mask"]
@@ -249,6 +254,7 @@ class Detector:
                     windows_rows.append(
                         {
                             "seg_id": str(global_seg_id),
+                            "input_order": int(i),
                             "lang": (lg or "").strip().lower() if lg is not None else "en",
                             "prediction_id": prediction_id,
                             "window_index": int(w_idx),
@@ -276,7 +282,8 @@ class Detector:
                 df_articles_lang["prediction_short"] = "Unknown"
 
                 df_windows_lang = pd.DataFrame(
-                    columns=[
+                    columns = [
+                        "input_order",
                         "lang",
                         "prediction_id",
                         "window_index",
@@ -298,20 +305,19 @@ class Detector:
                     self.unload_language(lg)
                 continue
 
-            # bucket by forward length to reduce padding
-            rows_sorted = sorted(windows_rows, key=lambda r: r["n_tokens_fwd"])
+            rows_sorted = sorted(windows_rows, key = lambda r: r["n_tokens_fwd"])
             ds = SegmentsDataset(rows_sorted)
 
             loader = DataLoader(
                 ds,
-                batch_size=int(batch.batch_size),
-                shuffle=False,
-                num_workers=int(batch.num_workers),
-                pin_memory=bool(batch.pin_memory),
-                persistent_workers=bool(batch.persistent_workers) if int(batch.num_workers) > 0 else False,
-                prefetch_factor=int(batch.prefetch_factor) if int(batch.num_workers) > 0 else None,
-                collate_fn=lambda b: collate_dynamic_pad(tokenizer, b),
-                drop_last=False,
+                batch_size = int(batch.batch_size),
+                shuffle = False,
+                num_workers = int(batch.num_workers),
+                pin_memory = bool(batch.pin_memory),
+                persistent_workers = bool(batch.persistent_workers) if int(batch.num_workers) > 0 else False,
+                prefetch_factor = int(batch.prefetch_factor) if int(batch.num_workers) > 0 else None,
+                collate_fn = lambda b: collate_dynamic_pad(tokenizer, b),
+                drop_last = False,
             )
 
             model.eval()
@@ -319,19 +325,19 @@ class Detector:
 
             itb = loader
             if batch.show_progress:
-                itb = tqdm(itb, desc=f"[{lg}] Scoring windows", total=len(loader))
+                itb = tqdm(itb, desc = f"[{lg}] Scoring windows", total = len(loader))
 
             with torch.inference_mode():
                 for b in itb:
-                    input_ids = b["input_ids"].to(self._device, non_blocking=True)
-                    attention_mask = b["attention_mask"].to(self._device, non_blocking=True)
+                    input_ids = b["input_ids"].to(self._device, non_blocking = True)
+                    attention_mask = b["attention_mask"].to(self._device, non_blocking = True)
 
                     if self._device.type == "cuda":
-                        with torch.amp.autocast("cuda", enabled=True, dtype=self._amp_dtype):
-                            logits = model(input_ids=input_ids, attention_mask=attention_mask)
+                        with torch.amp.autocast("cuda", enabled = True, dtype = self._amp_dtype):
+                            logits = model(input_ids = input_ids, attention_mask = attention_mask)
                             probs = torch.sigmoid(logits)
                     else:
-                        logits = model(input_ids=input_ids, attention_mask=attention_mask)
+                        logits = model(input_ids = input_ids, attention_mask = attention_mask)
                         probs = torch.sigmoid(logits)
 
                     probs_np = probs.detach().to(torch.float32).cpu().numpy().astype(float)
@@ -352,6 +358,7 @@ class Detector:
 
                 win_out.append(
                     {
+                        "input_order": int(r["input_order"]),
                         "lang": r["lang"],
                         "prediction_id": r["prediction_id"],
                         "window_index": int(r["window_index"]),
@@ -366,12 +373,17 @@ class Detector:
                     }
                 )
 
-            df_windows_lang = pd.DataFrame(win_out).sort_values(["prediction_id", "window_index"]).reset_index(drop=True)
+            df_windows_lang = (
+                pd.DataFrame(win_out)
+                .sort_values(["input_order", "window_index"], kind = "mergesort")
+                .reset_index(drop = True)
+            )
 
-            df_agg = aggregate_token_weighted(df_windows_lang, threshold=thr)
-            df_articles_lang = df_articles_lang.merge(df_agg, on="prediction_id", how="left")
+            df_agg = aggregate_token_weighted(df_windows_lang, threshold = thr)
+            df_articles_lang = df_articles_lang.merge(df_agg, on = "prediction_id", how = "left")
 
             preferred = [
+                "input_order",
                 "lang",
                 "prediction_id",
                 "ai_text_probability",
@@ -386,7 +398,10 @@ class Detector:
                 "num_windows",
                 "text",
             ]
-            df_articles_lang = df_articles_lang[[c for c in preferred if c in df_articles_lang.columns] + [c for c in df_articles_lang.columns if c not in preferred]]
+            df_articles_lang = df_articles_lang[
+                [c for c in preferred if c in df_articles_lang.columns] +
+                [c for c in df_articles_lang.columns if c not in preferred]
+            ]
 
             all_articles_rows.append(df_articles_lang)
             all_windows_rows.append(df_windows_lang)
@@ -394,6 +409,56 @@ class Detector:
             if self.runtime.cache_policy == "unload_after_call":
                 self.unload_language(lg)
 
-        df_articles = pd.concat(all_articles_rows, ignore_index=True).sort_values(["lang", "prediction_id"]).reset_index(drop=True)
-        df_windows = pd.concat(all_windows_rows, ignore_index=True).sort_values(["lang", "prediction_id", "window_index"]).reset_index(drop=True)
+        if len(all_articles_rows) == 0:
+            df_articles = pd.DataFrame(
+                columns = [
+                    "lang",
+                    "prediction_id",
+                    "ai_text_probability",
+                    "fraction_ai",
+                    "fraction_human",
+                    "num_ai_segments",
+                    "num_human_segments",
+                    "window_ai_threshold",
+                    "token_length_cap",
+                    "prediction",
+                    "prediction_short",
+                    "num_windows",
+                    "text",
+                ]
+            )
+        else:
+            df_articles = (
+                pd.concat(all_articles_rows, ignore_index = True)
+                .sort_values(["input_order"], kind = "mergesort")
+                .reset_index(drop = True)
+            )
+            if "input_order" in df_articles.columns:
+                df_articles = df_articles.drop(columns = ["input_order"])
+
+        if len(all_windows_rows) == 0:
+            df_windows = pd.DataFrame(
+                columns = [
+                    "lang",
+                    "prediction_id",
+                    "window_index",
+                    "start_index",
+                    "end_index",
+                    "token_length",
+                    "token_count",
+                    "ai_assistance_score",
+                    "label",
+                    "confidence",
+                    "window_text",
+                ]
+            )
+        else:
+            df_windows = (
+                pd.concat(all_windows_rows, ignore_index = True)
+                .sort_values(["input_order", "window_index"], kind = "mergesort")
+                .reset_index(drop = True)
+            )
+            if "input_order" in df_windows.columns:
+                df_windows = df_windows.drop(columns = ["input_order"])
+
         return df_articles, df_windows
