@@ -149,15 +149,44 @@ def process_batch(batch_size: int = 1):
 
     logger.info(f"Processing {len(jobs)} jobs")
 
-    session_ids = [str(j["data"].get("session_id") or "") for j in jobs]
-    target_urls = [str(j["data"].get("target_url") or "") for j in jobs]
-    timestamps = [j["data"].get("timestamp") for j in jobs]
-    langs = [_extract_lang(j["data"]) for j in jobs]
+    # Build a stable mapping record per job.
+    # Use queue job id as the prediction_id so identity is unique and durable.
+    job_records: List[Dict[str, Any]] = []
+    session_ids: List[str] = []
+
+    seen_prediction_ids = set()
+
+    for i, j in enumerate(jobs):
+        data = j.get("data") or {}
+
+        prediction_id = str(j.get("id"))
+        if prediction_id in seen_prediction_ids:
+            raise ValueError(f"Duplicate job id in popped batch: {prediction_id}")
+        seen_prediction_ids.add(prediction_id)
+
+        rec = {
+            "job_index": i,
+            "job_id": prediction_id,
+            "job_token": j.get("token"),
+            "prediction_id": prediction_id,
+            "session_id": str(data.get("session_id") or ""),
+            "target_url": str(data.get("target_url") or ""),
+            "timestamp": data.get("timestamp"),
+            "lang": _extract_lang(data),
+        }
+        job_records.append(rec)
+        session_ids.append(rec["session_id"])
 
     fetched = asyncio.run(_fetch_all_texts(session_ids, concurrency = 50))
 
+    if len(fetched) != len(job_records):
+        raise RuntimeError(
+            f"Fetched text count mismatch: len(fetched)={len(fetched)} vs len(job_records)={len(job_records)}"
+        )
+
     all_texts = [row.get("text") or "" for row in fetched]
-    prediction_ids = [str(i) for i in range(len(all_texts))]
+    langs = [rec["lang"] for rec in job_records]
+    prediction_ids = [rec["prediction_id"] for rec in job_records]
 
     n_fetch_errors = sum(1 for row in fetched if row.get("fetch_error"))
     n_empty_texts = sum(1 for txt in all_texts if not str(txt).strip())
@@ -171,27 +200,55 @@ def process_batch(batch_size: int = 1):
         prediction_ids = prediction_ids,
     )
 
-    results = []
+    # Re-index predictions by prediction_id instead of trusting list position.
+    preds_by_pid: Dict[str, Dict[str, Any]] = {}
+    for pr in preds:
+        pid = str(pr.get("prediction_id"))
+        if pid not in preds_by_pid:
+            preds_by_pid[pid] = pr
 
-    for i, pr in enumerate(preds):
+    results: List[Dict[str, Any]] = []
+
+    for i, rec in enumerate(job_records):
+        pid = rec["prediction_id"]
         fx = fetched[i]
+        pr = preds_by_pid.get(pid)
+
+        if pr is None:
+            pr = {
+                "status": "empty_or_failed",
+                "prediction_id": pid,
+                "lang": rec["lang"],
+                "prediction_short": None,
+                "prediction_long": None,
+                "fraction_ai": None,
+                "ai_probability": None,
+                "human_probability": None,
+                "n_windows": 0,
+                "n_ai_segments": 0,
+                "n_human_segments": 0,
+                "n_tokens": 0,
+                "error": None,
+            }
 
         results.append({
-            "session_id": session_ids[i],
-            "target_url": target_urls[i],
-            "timestamp": timestamps[i],
+            # Durable row identity for downstream systems
+            "job_id": rec["job_id"],
+            "prediction_id": pid,
 
-            # Legacy compatibility field
-            "file_key": "",
+            # Original job context
+            "session_id": rec["session_id"],
+            "target_url": rec["target_url"],
+            "timestamp": rec["timestamp"],
 
-            # Relevant input reference for text worker
+            # Optional fetch trace (useful for debugging misalignment / fetch failures)
             "download_link": fx.get("download_link"),
             "http_status": fx.get("http_status"),
             "final_url": fx.get("final_url"),
             "fetch_error": fx.get("fetch_error"),
 
             # Text outputs
-            "lang": pr.get("lang"),
+            "lang": pr.get("lang") or rec["lang"],
             "prediction_short": pr.get("prediction_short"),
             "prediction_long": pr.get("prediction_long"),
             "ai_probability": pr.get("ai_probability"),
